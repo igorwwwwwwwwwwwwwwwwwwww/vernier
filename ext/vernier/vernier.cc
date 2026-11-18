@@ -762,9 +762,6 @@ class BaseCollector {
         state = STATE_INIT;
     }
 
-    virtual void update_profiling() {
-    }
-
     virtual void write_meta(VALUE meta, VALUE result) {
         rb_hash_aset(meta, sym("started_at"), ULL2NUM(started_at.nanoseconds()));
         rb_hash_aset(meta, sym("interval"), Qnil);
@@ -1065,28 +1062,54 @@ class TimeCollector : public BaseCollector {
 
     rb_internal_thread_event_hook_t *thread_hook;
 
-    // Whether the sampling thread, the signal handler and the event hooks are
-    // in place
+    // Whether the signal handler and the event hooks are in place
     bool profiling = false;
+
+    public:
 
     bool should_profile() {
         return is_running() && forks_in_progress == 0;
     }
 
-    void update_profiling() override {
+    // Calls into Ruby, which can run another thread: what was read from a
+    // collector before may have changed
+    static VALUE thread_list() {
+        return rb_funcall(rb_path2class("Thread"), rb_intern("list"), 0);
+    }
+
+    void update_sampling_thread() {
+        if (should_profile() && profiling) {
+            collector_thread.start();
+        } else {
+            collector_thread.stop();
+        }
+    }
+
+    void update_hooks(VALUE all_threads) {
         if (should_profile() && !profiling) {
-            // Calling into Ruby can run another thread, which can stop this
-            // collector or start a fork, so look again afterwards
-            VALUE all_threads = rb_funcall(rb_path2class("Thread"), rb_intern("list"), 0);
-            if (should_profile() && !profiling) {
-                resume_profiling(all_threads);
-                profiling = true;
-            }
+            resume_profiling(all_threads);
+            profiling = true;
         } else if (!should_profile() && profiling) {
             pause_profiling();
             profiling = false;
         }
     }
+
+    // The hooks are added and removed while the sampling thread is stopped.
+    // On macOS a thread that is signalled while it waits for the lock of
+    // Ruby's thread event hooks has been seen to wait forever.
+    void update_profiling() {
+        VALUE all_threads = Qnil;
+        if (should_profile() && !profiling) {
+            all_threads = thread_list();
+        }
+
+        update_sampling_thread();
+        update_hooks(all_threads);
+        update_sampling_thread();
+    }
+
+    private:
 
     bool start() override {
         if (!BaseCollector::start()) {
@@ -1134,7 +1157,6 @@ class TimeCollector : public BaseCollector {
         this->threads.resumed(rb_thread_current());
 
         GlobalSignalHandler::get_instance()->install();
-        collector_thread.start();
         install_event_hooks();
     }
 
@@ -1161,7 +1183,6 @@ class TimeCollector : public BaseCollector {
     }
 
     void pause_profiling() {
-        collector_thread.stop();
         GlobalSignalHandler::get_instance()->uninstall();
         uninstall_event_hooks();
     }
@@ -1308,15 +1329,33 @@ collector_stop(VALUE self) {
     return result;
 }
 
-// Vernier::Collector keeps the collectors between start and stop
+// TimeCollector::update_profiling for the collectors between start and stop,
+// which Vernier::Collector keeps. No sampling thread runs while any hooks
+// change.
 static void
 update_started_collectors() {
+    VALUE all_threads = Qnil;
+    if (BaseCollector::forks_in_progress == 0) {
+        all_threads = TimeCollector::thread_list();
+    }
+
+    std::vector<TimeCollector *> collectors;
     VALUE started = rb_ivar_get(rb_cVernierCollector, rb_intern("@started"));
     for (long i = 0; i < RARRAY_LEN(started); i++) {
         VALUE obj = RARRAY_AREF(started, i);
         if (rb_obj_is_kind_of(obj, rb_cTimeCollector)) {
-            get_collector(obj)->update_profiling();
+            collectors.push_back(static_cast<TimeCollector *>(get_collector(obj)));
         }
+    }
+
+    for (auto collector : collectors) {
+        collector->update_sampling_thread();
+    }
+    for (auto collector : collectors) {
+        collector->update_hooks(all_threads);
+    }
+    for (auto collector : collectors) {
+        collector->update_sampling_thread();
     }
 }
 
