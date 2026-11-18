@@ -754,6 +754,10 @@ class BaseCollector {
         }
     }
 
+    virtual void cancel() {
+        state = STATE_INIT;
+    }
+
     virtual void write_meta(VALUE meta, VALUE result) {
         rb_hash_aset(meta, sym("started_at"), ULL2NUM(started_at.nanoseconds()));
         rb_hash_aset(meta, sym("interval"), Qnil);
@@ -1087,6 +1091,11 @@ class TimeCollector : public BaseCollector {
         update_profiling();
     }
 
+    void cancel() override {
+        BaseCollector::cancel();
+        update_profiling();
+    }
+
     void resume_profiling() {
         // Nothing told us what the threads did until now, or which ones were
         // started
@@ -1267,6 +1276,13 @@ collector_running_p(VALUE self) {
 }
 
 static VALUE
+collector_cancel(VALUE self) {
+    auto *collector = get_collector(self);
+    collector->cancel();
+    return rb_call_super(0, NULL);
+}
+
+static VALUE
 collector_stop(VALUE self) {
     auto *collector = get_collector(self);
 
@@ -1348,6 +1364,7 @@ Init_vernier(void)
   rb_define_method(rb_cTimeCollector, "pause", collector_pause, 0);
   rb_define_method(rb_cTimeCollector, "resume", collector_resume, 0);
   rb_define_method(rb_cTimeCollector, "running?", collector_running_p, 0);
+  rb_define_method(rb_cTimeCollector, "cancel", collector_cancel, 0);
   rb_define_private_method(rb_cTimeCollector, "finish",  collector_stop, 0);
 
   Init_consts(rb_mVernierMarkerPhase);

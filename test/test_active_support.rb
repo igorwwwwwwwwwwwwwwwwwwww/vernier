@@ -14,6 +14,15 @@ class TestActiveSupport < Minitest::Test
     refute ActiveSupport::Notifications.notifier.listening?("sql.active_record")
   end
 
+  def test_subscribers_removed_on_cancel
+    collector = Vernier::Collector.new(:wall, hooks: [:activesupport])
+    collector.start
+    assert ActiveSupport::Notifications.notifier.listening?("sql.active_record")
+
+    collector.cancel
+    refute ActiveSupport::Notifications.notifier.listening?("sql.active_record")
+  end
+
   def test_instrument
     result = Vernier.trace(hooks: [:activesupport]) do
       ActiveSupport::Notifications.instrument("foo.bar") {}

@@ -375,6 +375,26 @@ class TestTimeCollector < Minitest::Test
     assert_similar 100, result.total_weights
   end
 
+  def test_cancel
+    collector = Vernier::Collector.new(:wall, interval: SAMPLE_SCALE_INTERVAL)
+    collector.start
+    slow_method
+    assert_nil collector.cancel
+
+    refute_predicate collector, :running?
+    assert_nil collector.stop
+  end
+
+  def test_cancel_while_paused
+    collector = Vernier::Collector.new(:wall, interval: SAMPLE_SCALE_INTERVAL)
+    collector.start
+    collector.pause
+    collector.cancel
+
+    refute_predicate collector, :running?
+    assert_nil collector.stop
+  end
+
   def test_multiple_starts
     error = assert_raises(RuntimeError) do
       Vernier.start_profile(interval: SAMPLE_SCALE_INTERVAL)

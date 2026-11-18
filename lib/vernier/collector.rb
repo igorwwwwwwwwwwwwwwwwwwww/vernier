@@ -62,6 +62,11 @@ module Vernier
         @heap_tracker.drain
       end
 
+      def cancel
+        @heap_tracker.lock
+        super
+      end
+
       def finish
         @heap_tracker.drain
 
@@ -190,7 +195,21 @@ module Vernier
       )
     end
 
+    ##
+    # Stop the collector without a result. What it collected is discarded,
+    # and a later #stop returns nil.
+    def cancel
+      @cancelled = true
+      @thread_names.cancel
+      @hooks.each do |hook|
+        hook.disable
+      end
+      nil
+    end
+
     def stop
+      return if @cancelled
+
       result = finish
 
       result.meta[:mode] = @mode

@@ -53,6 +53,18 @@ class TestRetainedMemory < Minitest::Test
     assert_operator result1.total_samples, :>, result2.total_samples
   end
 
+  def test_cancel
+    collector = Vernier::Collector.new(:retained)
+    collector.start
+    collector.cancel
+
+    tracker = collector.instance_variable_get(:@heap_tracker)
+    allocated = tracker.allocated_objects
+    100.times { Object.new }
+    assert_equal allocated, tracker.allocated_objects
+    assert_nil collector.stop
+  end
+
   def test_thread_allocation
     result = Vernier.trace_retained do
       Thread.new { }.join

@@ -15,6 +15,15 @@ class TestCustomSampler < Minitest::Test
     assert_equal 10, result.total_weights
   end
 
+  def test_cancel
+    collector = Vernier::Collector.new(:custom)
+    collector.start
+    collector.sample
+    collector.cancel
+
+    assert_nil collector.stop
+  end
+
   def test_custom_result_has_main_thread
     collector = Vernier::Collector.new(:custom)
     collector.start

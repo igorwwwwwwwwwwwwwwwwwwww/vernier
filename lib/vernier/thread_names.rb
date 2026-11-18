@@ -18,6 +18,10 @@ module Vernier
       @anonymous[object_id]
     end
 
+    def cancel
+      @tp.disable
+    end
+
     def finish
       collect_running
       @tp.disable
