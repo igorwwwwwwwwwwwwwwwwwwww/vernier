@@ -95,6 +95,24 @@ class TestFork < Minitest::Test
     end
   end
 
+  def test_popen
+    Vernier.profile(interval: 500) do
+      IO.popen("-") do |io|
+        unless io
+          sleep 0.01
+          $stdout.syswrite("child")
+          exit!(0)
+        end
+
+        unless IO.select([io], nil, nil, 5)
+          Process.kill(:KILL, io.pid)
+          flunk "forked child did not write"
+        end
+        assert_equal "child", io.read
+      end
+    end
+  end
+
   def test_two_collectors
     outer = inner = nil
     outer = Vernier.profile(interval: 500) do
