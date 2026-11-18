@@ -23,14 +23,12 @@ class TestFork < Minitest::Test
     result = collector.stop
 
     assert_valid_result result
-    thread = result.main_thread
-    lines = thread[:samples].map do |stack_idx|
-      result.stack(stack_idx).frames.detect { _1.name.end_with?(__method__.to_s) }&.line
-    end
+    lines = sampled_lines(result, __method__)
     assert_includes lines, before_line
     assert_includes lines, after_line
-    assert_operator thread[:timestamps].min, :<, before_fork
-    assert_operator thread[:timestamps].max, :>, after_fork
+    timestamps = result.main_thread[:timestamps]
+    assert_operator timestamps.min, :<, before_fork
+    assert_operator timestamps.max, :>, after_fork
   end
 
   def test_fork_from_another_thread
@@ -179,16 +177,17 @@ class TestFork < Minitest::Test
   def test_paused_collector_stays_paused
     collector = Vernier::Collector.new(:wall, interval: 500)
     collector.start
-    busy(0.02)
+    busy(0.02); before_line = __LINE__
     collector.pause
-    paused_at = collector.current_time
     assert_child_exits(fork { sleep 0.01 })
-    busy(0.02)
+    busy(0.02); after_line = __LINE__
 
     refute_predicate collector, :running?
     result = collector.stop
     assert_valid_result result
-    assert_operator result.main_thread[:timestamps].max, :<, paused_at
+    lines = sampled_lines(result, __method__)
+    assert_includes lines, before_line
+    refute_includes lines, after_line
   end
 
   def test_retained_collector
@@ -277,6 +276,13 @@ class TestFork < Minitest::Test
         return nil
       end
       sleep 0.005
+    end
+  end
+
+  # The lines of the test method that the main thread was sampled in
+  def sampled_lines(result, test_method)
+    result.main_thread[:samples].map do |stack_idx|
+      result.stack(stack_idx).frames.detect { _1.name.end_with?(test_method.to_s) }&.line
     end
   end
 

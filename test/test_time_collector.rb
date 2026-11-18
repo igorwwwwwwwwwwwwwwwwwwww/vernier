@@ -366,13 +366,17 @@ class TestTimeCollector < Minitest::Test
   def test_stop_while_paused
     collector = Vernier::Collector.new(:wall, interval: SAMPLE_SCALE_INTERVAL)
     collector.start
-    slow_method
+    slow_method; expected_line = __LINE__
     collector.pause
-    slow_method
+    slow_method; unexpected_line = __LINE__
     result = collector.stop
 
     assert_valid_result result
-    assert_similar 100, result.total_weights
+    lines = result.main_thread[:samples].map do |sample|
+      result.stack(sample).frames.detect { _1.name.end_with?(__method__.to_s) }&.line
+    end
+    assert_includes lines, expected_line
+    refute_includes lines, unexpected_line
   end
 
   def test_cancel
