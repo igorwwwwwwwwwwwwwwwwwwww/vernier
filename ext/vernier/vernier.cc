@@ -618,6 +618,18 @@ class ThreadTable {
             set_state(Thread::State::STOPPED, th);
         }
 
+        // We only see what threads do while the event hooks are installed
+        void reset_states() {
+            const std::lock_guard<std::mutex> lock(mutex);
+            TimeStamp now = TimeStamp::Now();
+            for (auto &thread : list) {
+                if (thread->state != Thread::State::STOPPED) {
+                    thread->state = Thread::State::INITIAL;
+                    thread->state_changed_at = now;
+                }
+            }
+        }
+
         Thread* find_thread(VALUE th) {
             // Assumes lock is already held by caller
             uintptr_t serial = (uintptr_t)rb_internal_thread_specific_get(th, thread_serial_key);
@@ -685,7 +697,13 @@ class BaseCollector {
     }
 
     public:
-    bool running = false;
+    enum State {
+        STATE_INIT,
+        STATE_PAUSED,
+        STATE_RUNNING
+    };
+    State state = STATE_INIT;
+
     StackTable *stack_table;
     VALUE stack_table_value;
 
@@ -699,25 +717,41 @@ class BaseCollector {
     BaseCollector(const BaseCollector &) = delete;
     BaseCollector &operator=(const BaseCollector &) = delete;
 
+    bool is_running() {
+        return state == STATE_RUNNING;
+    }
+
     virtual bool start() {
-        if (running) {
+        if (state != STATE_INIT) {
             return false;
         }
 
         start_thread = rb_thread_current();
         started_at = TimeStamp::Now();
 
-        running = true;
+        state = STATE_RUNNING;
         return true;
     }
 
     virtual VALUE stop() {
-        if (!running) {
+        if (state == STATE_INIT) {
             rb_raise(rb_eRuntimeError, "collector not running");
         }
-        running = false;
+        state = STATE_INIT;
 
         return Qnil;
+    }
+
+    virtual void pause() {
+        if (state == STATE_RUNNING) {
+            state = STATE_PAUSED;
+        }
+    }
+
+    virtual void resume() {
+        if (state == STATE_PAUSED) {
+            state = STATE_RUNNING;
+        }
     }
 
     virtual void write_meta(VALUE meta, VALUE result) {
@@ -842,7 +876,6 @@ class TimeCollector : public BaseCollector {
 
     pthread_t sample_thread;
 
-    atomic_bool running;
     SignalSafeSemaphore thread_stopped;
 
     TimeStamp interval;
@@ -1020,10 +1053,44 @@ class TimeCollector : public BaseCollector {
 
     rb_internal_thread_event_hook_t *thread_hook;
 
+    // Whether the sampling thread, the signal handler and the event hooks are
+    // in place
+    bool profiling = false;
+
+    void update_profiling() {
+        bool wanted = is_running();
+        if (wanted && !profiling) {
+            resume_profiling();
+        } else if (!wanted && profiling) {
+            pause_profiling();
+        }
+        profiling = wanted;
+    }
+
     bool start() override {
         if (!BaseCollector::start()) {
             return false;
         }
+
+        update_profiling();
+
+        return true;
+    }
+
+    void pause() override {
+        BaseCollector::pause();
+        update_profiling();
+    }
+
+    void resume() override {
+        BaseCollector::resume();
+        update_profiling();
+    }
+
+    void resume_profiling() {
+        // Nothing told us what the threads did until now, or which ones were
+        // started
+        threads.reset_states();
 
         // Record one sample from each thread
         VALUE all_threads = rb_funcall(rb_path2class("Thread"), rb_intern("list"), 0);
@@ -1041,14 +1108,6 @@ class TimeCollector : public BaseCollector {
         // events and we need at least one
         this->threads.resumed(rb_thread_current());
 
-        resume_profiling();
-
-        running = true;
-
-        return true;
-    }
-
-    void resume_profiling() {
         GlobalSignalHandler::get_instance()->install();
         collector_thread.start();
         install_event_hooks();
@@ -1085,7 +1144,7 @@ class TimeCollector : public BaseCollector {
     VALUE stop() override {
         BaseCollector::stop();
 
-        pause_profiling();
+        update_profiling();
 
         stack_table->finalize();
 
@@ -1188,6 +1247,26 @@ collector_start(VALUE self) {
 }
 
 static VALUE
+collector_pause(VALUE self) {
+    auto *collector = get_collector(self);
+    collector->pause();
+    return self;
+}
+
+static VALUE
+collector_resume(VALUE self) {
+    auto *collector = get_collector(self);
+    collector->resume();
+    return self;
+}
+
+static VALUE
+collector_running_p(VALUE self) {
+    auto *collector = get_collector(self);
+    return collector->is_running() ? Qtrue : Qfalse;
+}
+
+static VALUE
 collector_stop(VALUE self) {
     auto *collector = get_collector(self);
 
@@ -1266,6 +1345,9 @@ Init_vernier(void)
   rb_undef_alloc_func(rb_cTimeCollector);
   rb_define_singleton_method(rb_cTimeCollector, "new", collector_new, 2);
   rb_define_method(rb_cTimeCollector, "start", collector_start, 0);
+  rb_define_method(rb_cTimeCollector, "pause", collector_pause, 0);
+  rb_define_method(rb_cTimeCollector, "resume", collector_resume, 0);
+  rb_define_method(rb_cTimeCollector, "running?", collector_running_p, 0);
   rb_define_private_method(rb_cTimeCollector, "finish",  collector_stop, 0);
 
   Init_consts(rb_mVernierMarkerPhase);

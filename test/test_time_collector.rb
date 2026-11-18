@@ -316,6 +316,65 @@ class TestTimeCollector < Minitest::Test
     assert_similar 200, result.total_weights
   end
 
+  def test_pause_resume
+    expected_lines = []
+    unexpected_lines = []
+    collector = Vernier::Collector.new(:wall, interval: SAMPLE_SCALE_INTERVAL)
+    collector.start
+    assert_predicate collector, :running?
+    slow_method; expected_lines << __LINE__
+    collector.pause
+    refute_predicate collector, :running?
+    slow_method; unexpected_lines << __LINE__
+    collector.resume
+    assert_predicate collector, :running?
+    slow_method; expected_lines << __LINE__
+    result = collector.stop
+    refute_predicate collector, :running?
+    assert_valid_result result
+
+    lines = result.main_thread[:samples].map do |sample|
+      stack = result.stack(sample)
+      frame = stack.frames.detect { _1.name.end_with?(__method__.to_s) }
+      frame.line
+    end
+    expected_lines.each do |line|
+      assert_includes lines, line
+    end
+    unexpected_lines.each do |line|
+      refute_includes lines, line
+    end
+  end
+
+  def test_pause_resume_with_threads
+    collector = Vernier::Collector.new(:wall, interval: SAMPLE_SCALE_INTERVAL)
+    collector.start
+    finished_while_paused = 3.times.map { Thread.new { slow_method } }
+    Thread.pass
+    collector.pause
+    finished_while_paused.each(&:join)
+    started_while_paused = Thread.new { two_slow_methods; Thread.current.object_id }
+    Thread.pass
+    collector.resume
+    thread_id = started_while_paused.value
+    result = collector.stop
+
+    assert_valid_result result
+    assert_similar 100, result.threads.fetch(thread_id)[:weights].sum
+  end
+
+  def test_stop_while_paused
+    collector = Vernier::Collector.new(:wall, interval: SAMPLE_SCALE_INTERVAL)
+    collector.start
+    slow_method
+    collector.pause
+    slow_method
+    result = collector.stop
+
+    assert_valid_result result
+    assert_similar 100, result.total_weights
+  end
+
   def test_multiple_starts
     error = assert_raises(RuntimeError) do
       Vernier.start_profile(interval: SAMPLE_SCALE_INTERVAL)
