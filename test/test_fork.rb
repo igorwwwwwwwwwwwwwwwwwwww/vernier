@@ -176,6 +176,21 @@ class TestFork < Minitest::Test
     Vernier.stop_profile
   end
 
+  def test_paused_collector_stays_paused
+    collector = Vernier::Collector.new(:wall, interval: 500)
+    collector.start
+    busy(0.02)
+    collector.pause
+    paused_at = collector.current_time
+    assert_child_exits(fork { sleep 0.01 })
+    busy(0.02)
+
+    refute_predicate collector, :running?
+    result = collector.stop
+    assert_valid_result result
+    assert_operator result.main_thread[:timestamps].max, :<, paused_at
+  end
+
   def test_retained_collector
     retained = []
     result = Vernier.profile(mode: :retained) do
