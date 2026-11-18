@@ -704,6 +704,10 @@ class BaseCollector {
     };
     State state = STATE_INIT;
 
+    // Calls to Process._fork that have not returned yet. No collector samples
+    // while there are any, see lib/vernier/fork.rb
+    static int forks_in_progress;
+
     StackTable *stack_table;
     VALUE stack_table_value;
 
@@ -758,6 +762,9 @@ class BaseCollector {
         state = STATE_INIT;
     }
 
+    virtual void update_profiling() {
+    }
+
     virtual void write_meta(VALUE meta, VALUE result) {
         rb_hash_aset(meta, sym("started_at"), ULL2NUM(started_at.nanoseconds()));
         rb_hash_aset(meta, sym("interval"), Qnil);
@@ -787,6 +794,7 @@ class BaseCollector {
     virtual void compact() {
     };
 };
+int BaseCollector::forks_in_progress = 0;
 
 class GlobalSignalHandler {
     static LiveSample *live_sample;
@@ -1061,14 +1069,23 @@ class TimeCollector : public BaseCollector {
     // in place
     bool profiling = false;
 
-    void update_profiling() {
-        bool wanted = is_running();
-        if (wanted && !profiling) {
-            resume_profiling();
-        } else if (!wanted && profiling) {
+    bool should_profile() {
+        return is_running() && forks_in_progress == 0;
+    }
+
+    void update_profiling() override {
+        if (should_profile() && !profiling) {
+            // Calling into Ruby can run another thread, which can stop this
+            // collector or start a fork, so look again afterwards
+            VALUE all_threads = rb_funcall(rb_path2class("Thread"), rb_intern("list"), 0);
+            if (should_profile() && !profiling) {
+                resume_profiling(all_threads);
+                profiling = true;
+            }
+        } else if (!should_profile() && profiling) {
             pause_profiling();
+            profiling = false;
         }
-        profiling = wanted;
     }
 
     bool start() override {
@@ -1096,13 +1113,12 @@ class TimeCollector : public BaseCollector {
         update_profiling();
     }
 
-    void resume_profiling() {
+    void resume_profiling(VALUE all_threads) {
         // Nothing told us what the threads did until now, or which ones were
         // started
         threads.reset_states();
 
         // Record one sample from each thread
-        VALUE all_threads = rb_funcall(rb_path2class("Thread"), rb_intern("list"), 0);
         for (int i = 0; i < RARRAY_LEN(all_threads); i++) {
             VALUE thread = RARRAY_AREF(all_threads, i);
             Thread *record = this->threads.add(thread);
@@ -1248,6 +1264,8 @@ static VALUE
 collector_start(VALUE self) {
     auto *collector = get_collector(self);
 
+    rb_call_super(0, NULL);
+
     if (!collector->start()) {
         rb_raise(rb_eRuntimeError, "collector already running");
     }
@@ -1288,6 +1306,37 @@ collector_stop(VALUE self) {
 
     VALUE result = collector->stop();
     return result;
+}
+
+// Vernier::Collector keeps the collectors between start and stop
+static void
+update_started_collectors() {
+    VALUE started = rb_ivar_get(rb_cVernierCollector, rb_intern("@started"));
+    for (long i = 0; i < RARRAY_LEN(started); i++) {
+        VALUE obj = RARRAY_AREF(started, i);
+        if (rb_obj_is_kind_of(obj, rb_cTimeCollector)) {
+            get_collector(obj)->update_profiling();
+        }
+    }
+}
+
+static VALUE
+collector_fork_started(VALUE self) {
+    BaseCollector::forks_in_progress++;
+    update_started_collectors();
+    return Qnil;
+}
+
+static VALUE
+collector_fork_finished(VALUE self, VALUE in_child) {
+    if (RTEST(in_child)) {
+        // The threads that were forking in the parent don't exist here
+        BaseCollector::forks_in_progress = 0;
+    } else {
+        BaseCollector::forks_in_progress--;
+    }
+    update_started_collectors();
+    return Qnil;
 }
 
 static VALUE collector_new(VALUE self, VALUE mode, VALUE options) {
@@ -1357,6 +1406,8 @@ Init_vernier(void)
   rb_mVernierMarkerType = rb_define_module_under(rb_mVernierMarker, "Type");
 
   rb_cVernierCollector = rb_define_class_under(rb_mVernier, "Collector", rb_cObject);
+  rb_define_singleton_method(rb_cVernierCollector, "fork_started", collector_fork_started, 0);
+  rb_define_singleton_method(rb_cVernierCollector, "fork_finished", collector_fork_finished, 1);
   rb_cTimeCollector = rb_define_class_under(rb_cVernierCollector, "TimeCollector", rb_cVernierCollector);
   rb_undef_alloc_func(rb_cTimeCollector);
   rb_define_singleton_method(rb_cTimeCollector, "new", collector_new, 2);

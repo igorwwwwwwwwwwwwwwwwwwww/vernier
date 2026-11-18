@@ -37,6 +37,7 @@ module Vernier
     def self.stop
       result = @collector.stop
       @collector = nil
+      return unless result
 
       output_path = options[:output]
       unless output_path

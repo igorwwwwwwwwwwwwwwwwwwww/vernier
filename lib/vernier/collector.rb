@@ -21,9 +21,6 @@ module Vernier
         @timestamps << Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
       end
 
-      def start
-      end
-
       def finish
         result = Result.new
         result.instance_variable_set(:@threads, {
@@ -55,6 +52,7 @@ module Vernier
       end
 
       def start
+        super
         @heap_tracker.collect
       end
 
@@ -101,6 +99,14 @@ module Vernier
       end
     end
 
+    # Collectors between start and stop. Process._fork keeps them from
+    # sampling while it runs, see fork.rb
+    @started = []
+
+    class << self
+      attr_reader :started # :nodoc:
+    end
+
     def self.new(mode, options = {})
       return super unless Collector.equal?(self)
 
@@ -144,6 +150,16 @@ module Vernier
     end
 
     attr_reader :stack_table
+    attr_reader :pid # :nodoc:
+
+    def start
+      @pid = Process.pid
+      Collector.started << self
+    end
+
+    def running?
+      Collector.started.include?(self)
+    end
 
     private def add_hook(hook)
       case hook.to_s.to_sym
@@ -199,6 +215,7 @@ module Vernier
     # Stop the collector without a result. What it collected is discarded,
     # and a later #stop returns nil.
     def cancel
+      Collector.started.delete(self)
       @cancelled = true
       @thread_names.cancel
       @hooks.each do |hook|
@@ -211,6 +228,7 @@ module Vernier
       return if @cancelled
 
       result = finish
+      Collector.started.delete(self)
 
       result.meta[:mode] = @mode
       result.meta[:out] = @out

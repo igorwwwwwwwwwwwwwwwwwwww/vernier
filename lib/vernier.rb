@@ -8,6 +8,7 @@ require "vernier/memory_leak_detector"
 require "vernier/parsed_profile"
 require "vernier/result"
 require "vernier/hooks"
+require "vernier/fork"
 require "vernier/output/firefox"
 require "vernier/output/cpuprofile"
 require "vernier/output/top"
@@ -61,6 +62,14 @@ module Vernier
     @collector = nil
 
     result
+  end
+
+  # What the parent collected stays in the parent
+  def self.cancel_inherited_profiles # :nodoc:
+    Collector.started.dup.each do |collector|
+      collector.cancel unless collector.pid == Process.pid
+    end
+    @collector = nil unless Collector.started.include?(@collector)
   end
 
   def self.trace_retained(**profile_options, &block)

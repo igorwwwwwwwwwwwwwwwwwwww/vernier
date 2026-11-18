@@ -81,6 +81,26 @@ class IntegrationTest < Minitest::Test
     end
   end
 
+  def test_autorun_with_fork
+    script = <<~RUBY
+      pid = fork { sleep 0.01 }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      until Process.wait(pid, Process::WNOHANG)
+        Process.kill(:KILL, pid) if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        sleep 0.01
+      end
+      exit($?.success?)
+    RUBY
+
+    Dir.mktmpdir do |dir|
+      env = { "VERNIER_QUIET" => "true", "VERNIER_OUTPUT_DIR" => dir }
+      system(env, RbConfig.ruby, "-I", LIB_DIR, "-r", "vernier/autorun", "-e", script, exception: true, out: '/dev/null', err: '/dev/null')
+
+      # The child runs the at_exit hook as well, and must not write a profile
+      assert_equal 1, Dir.children(dir).size
+    end
+  end
+
   # A script which does enough work to be sampled, in a directory outside of
   # the project so its path appears unchanged in the profile.
   def with_script

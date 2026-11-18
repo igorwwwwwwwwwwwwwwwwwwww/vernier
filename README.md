@@ -235,6 +235,12 @@ Vernier.profile(out: "time_profile.json", hooks: [:rails, :memory_usage]) do
 end
 ```
 
+### Forking
+
+Collectors don't sample while the process forks and continue in the parent afterwards. A forked child has no profile running: `stop` on a collector it inherited returns `nil`, and it can start a profile of its own.
+
+This applies to `fork`, `Kernel#fork` and `IO.popen("-")`. `Process.daemon` and a `fork(2)` called by a C extension are not handled.
+
 ### Overhead
 
 Vernier is a sampling profiler, so its overhead is low and depends on the sampling `interval`. Profiling a CPU-bound loop at the default interval runs within a few percent of its unprofiled speed.
