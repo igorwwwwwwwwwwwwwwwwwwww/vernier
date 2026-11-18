@@ -22,6 +22,8 @@ extern "C" size_t rb_obj_memsize_of(VALUE);
 
 extern VALUE rb_mVernier;
 
+void update_memory_trackers(bool fork_in_progress);
+
 void Init_memory();
 void Init_stack_table();
 void Init_heap_tracker();

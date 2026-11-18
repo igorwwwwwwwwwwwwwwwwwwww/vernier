@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mutex>
 #include <stdio.h>
 #include <unistd.h>
@@ -80,14 +81,46 @@ class MemoryTracker : public PeriodicThread {
             const std::lock_guard<std::mutex> lock(mutex);
             results.push_back(Record{TimeStamp::Now(), memory_rss()});
         }
+
+        // Trackers between start and stop. Their threads don't run while the
+        // process forks: the child would wait for a thread it doesn't have.
+        static std::vector<MemoryTracker *> started;
+        static bool fork_in_progress;
+
+        void start_tracking() {
+            if (std::find(started.begin(), started.end(), this) == started.end()) {
+                started.push_back(this);
+            }
+            if (!fork_in_progress) {
+                start();
+            }
+        }
+
+        void stop_tracking() {
+            started.erase(std::remove(started.begin(), started.end(), this), started.end());
+            stop();
+        }
 };
+std::vector<MemoryTracker *> MemoryTracker::started;
+bool MemoryTracker::fork_in_progress = false;
+
+void update_memory_trackers(bool fork_in_progress) {
+    MemoryTracker::fork_in_progress = fork_in_progress;
+    for (auto memory_tracker : MemoryTracker::started) {
+        if (fork_in_progress) {
+            memory_tracker->stop();
+        } else {
+            memory_tracker->start();
+        }
+    }
+}
 
 static void
 memory_tracker_free(void *data) {
     MemoryTracker *memory_tracker = static_cast<MemoryTracker *>(data);
     // The sampler thread holds a pointer to the tracker, so it must be
     // stopped (and joined) before the tracker is destroyed.
-    memory_tracker->stop();
+    memory_tracker->stop_tracking();
     delete memory_tracker;
 }
 
@@ -101,7 +134,7 @@ static const rb_data_type_t rb_memory_tracker_type = {
 VALUE memory_tracker_start(VALUE self) {
     MemoryTracker *memory_tracker;
     TypedData_Get_Struct(self, MemoryTracker, &rb_memory_tracker_type, memory_tracker);
-    memory_tracker->start();
+    memory_tracker->start_tracking();
     return self;
 }
 
@@ -109,7 +142,7 @@ VALUE memory_tracker_stop(VALUE self) {
     MemoryTracker *memory_tracker;
     TypedData_Get_Struct(self, MemoryTracker, &rb_memory_tracker_type, memory_tracker);
 
-    memory_tracker->stop();
+    memory_tracker->stop_tracking();
     return self;
 }
 

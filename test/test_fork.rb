@@ -200,6 +200,46 @@ class TestFork < Minitest::Test
     assert_equal 2, result.total_weights
   end
 
+  def test_memory_usage_hook
+    after_fork = nil
+    result = Vernier.profile(interval: 500, hooks: [:memory_usage]) do |collector|
+      assert_child_exits(fork { sleep 0.01 })
+      after_fork = collector.current_time
+      sleep 0.05
+    end
+
+    assert_valid_result result
+    timestamps = result.hooks.first.firefox_counters[:samples][:time]
+    assert_operator timestamps.max, :>, after_fork / 1_000_000.0
+  end
+
+  def test_memory_tracker
+    tracker = Vernier::MemoryTracker.new
+    tracker.start
+    assert_child_exits(fork { sleep 0.01 })
+    after_fork = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
+    sleep 0.05
+
+    timestamps, = tracker.results
+    assert_operator timestamps.max, :>, after_fork
+  ensure
+    tracker.stop
+  end
+
+  def test_memory_tracker_in_child
+    tracker = Vernier::MemoryTracker.new
+    tracker.start
+    pid = fork do
+      in_child = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
+      sleep 0.05
+      timestamps, = tracker.results
+      exit(timestamps.max > in_child)
+    end
+    assert_child_exits(pid)
+  ensure
+    tracker.stop
+  end
+
   private
 
   def assert_child_exits(pid)

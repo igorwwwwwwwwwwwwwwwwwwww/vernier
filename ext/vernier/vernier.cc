@@ -1324,6 +1324,7 @@ static VALUE
 collector_fork_started(VALUE self) {
     BaseCollector::forks_in_progress++;
     update_started_collectors();
+    update_memory_trackers(true);
     return Qnil;
 }
 
@@ -1336,6 +1337,7 @@ collector_fork_finished(VALUE self, VALUE in_child) {
         BaseCollector::forks_in_progress--;
     }
     update_started_collectors();
+    update_memory_trackers(BaseCollector::forks_in_progress > 0);
     return Qnil;
 }
 
