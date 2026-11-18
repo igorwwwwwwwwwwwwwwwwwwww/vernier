@@ -113,6 +113,30 @@ class TestFork < Minitest::Test
     end
   end
 
+  def test_fork_that_raises
+    # In a process of its own, to have a _fork below Vernier's that raises
+    script = <<~RUBY
+      $fail = false
+      Process.singleton_class.prepend(Module.new { def _fork = $fail ? raise(Errno::EAGAIN) : super })
+      require "vernier"
+
+      collector = Vernier::Collector.new(:wall, interval: 500)
+      collector.start
+      $fail = true
+      begin
+        fork { }
+      rescue Errno::EAGAIN
+        failed_at = collector.current_time
+      end
+      target = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.05
+      nil while Process.clock_gettime(Process::CLOCK_MONOTONIC) < target
+      result = collector.stop
+      exit(failed_at && result.main_thread[:timestamps].max > failed_at)
+    RUBY
+
+    assert system(RbConfig.ruby, "-I", File.expand_path("../lib", __dir__), "-e", script)
+  end
+
   def test_two_collectors
     outer = inner = nil
     outer = Vernier.profile(interval: 500) do
